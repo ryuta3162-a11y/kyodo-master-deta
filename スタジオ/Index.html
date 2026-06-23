@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ホットスタジオ集計ダッシュボード</title>
+  
+  <!-- Tailwind CSS (スタイリング用) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel (ブラウザでReactのコードを変換するため) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- 安定性抜群の Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+  
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect, useRef } = React;
+
+    // --- SVGアイコンコンポーネント ---
+    const IconUsers = ({ size = 24 }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    );
+    const IconUserCheck = ({ size = 24 }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><polyline points="16 11 18 13 22 9"/></svg>
+    );
+    const IconPercent = ({ size = 24 }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>
+    );
+    const IconCalendar = ({ size = 24 }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></svg>
+    );
+
+    // ==========================================
+    // 📊 データソース（スプレッドシートの集計結果）
+    // ※運用時は、スプレッドシート「集計」シートの結果をここに書き写してください。
+    // ==========================================
+    const rawData = [
+      {
+        month: "4月",
+        totalMembers: 207,
+        overall: { users: 101, rate: 48.8, avgAge: 55.4, gen: { "20代以下": 1.0, "30代": 1.1, "40代": 21.8, "50代": 43.7, "60代": 25.0, "70代以上": 7.4 } },
+        morning: { users: 78, rate: 37.7, avgAge: 55.0, gen: { "20代以下": 0.0, "30代": 4.6, "40代": 25.0, "50代": 45.0, "60代": 20.0, "70代以上": 5.4 } },
+        afternoon: { users: 40, rate: 19.3, avgAge: 52.0, gen: { "20代以下": 2.9, "30代": 2.9, "40代": 31.4, "50代": 45.7, "60代": 14.3, "70代以上": 2.9 } },
+        night: { users: 40, rate: 19.3, avgAge: 52.0, gen: { "20代以下": 2.9, "30代": 2.9, "40代": 31.4, "50代": 45.7, "60代": 14.3, "70代以上": 2.9 } },
+      },
+      {
+        month: "5月",
+        totalMembers: 230,
+        overall: { users: 108, rate: 47.0, avgAge: 54.8, gen: { "20代以下": 1.0, "30代": 3.1, "40代": 21.0, "50代": 45.0, "60代": 25.0, "70代以上": 4.9 } },
+        morning: { users: 77, rate: 33.5, avgAge: 54.0, gen: { "20代以下": 1.4, "30代": 5.0, "40代": 25.0, "50代": 45.0, "60代": 20.0, "70代以上": 3.6 } },
+        afternoon: { users: 36, rate: 15.7, avgAge: 49.6, gen: { "20代以下": 9.1, "30代": 6.1, "40代": 33.3, "50代": 33.3, "60代": 15.2, "70代以上": 3.0 } },
+        night: { users: 36, rate: 15.7, avgAge: 49.6, gen: { "20代以下": 9.1, "30代": 6.1, "40代": 33.3, "50代": 33.3, "60代": 15.2, "70代以上": 3.0 } },
+      },
+      {
+        month: "6月",
+        totalMembers: 217,
+        overall: { users: 71, rate: 32.7, avgAge: 54.7, gen: { "20代以下": 1.5, "30代": 3.0, "40代": 23.0, "50代": 42.0, "60代": 25.0, "70代以上": 5.5 } },
+        morning: { users: 48, rate: 22.1, avgAge: 54.2, gen: { "20代以下": 4.3, "30代": 4.3, "40代": 25.0, "50代": 40.0, "60代": 22.0, "70代以上": 4.4 } },
+        afternoon: { users: 28, rate: 12.9, avgAge: 49.7, gen: { "20代以下": 14.3, "30代": 32.1, "40代": 0.0, "50代": 32.1, "60代": 17.9, "70代以上": 3.6 } },
+        night: { users: 28, rate: 12.9, avgAge: 49.7, gen: { "20代以下": 14.3, "30代": 32.1, "40代": 0.0, "50代": 32.1, "60代": 17.9, "70代以上": 3.6 } },
+      }
+    ];
+
+    const generations = ["20代以下", "30代", "40代", "50代", "60代", "70代以上"];
+    const colors = ["#8884d8", "#82ca9d", "#ffc658", "#ff8042", "#a4de6c", "#d0ed57"];
+
+    // Chart.js 用のコンポーネント
+    const GenerationsChart = ({ data }) => {
+      const canvasRef = useRef(null);
+      const chartInstance = useRef(null);
+
+      useEffect(() => {
+        if (!canvasRef.current) return;
+
+        if (chartInstance.current) {
+          chartInstance.current.destroy();
+        }
+
+        const labels = data.map(d => d.name);
+        const datasets = generations.map((gen, index) => ({
+          label: gen,
+          data: data.map(d => d[gen] || 0),
+          backgroundColor: colors[index],
+        }));
+
+        const ctx = canvasRef.current.getContext('2d');
+        chartInstance.current = new window.Chart(ctx, {
+          type: 'bar',
+          data: { labels, datasets },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              x: { stacked: true, max: 100, ticks: { callback: (value) => value + '%' } },
+              y: { stacked: true }
+            },
+            plugins: {
+              tooltip: { callbacks: { label: (context) => `${context.dataset.label}: ${context.raw}%` } }
+            }
+          }
+        });
+
+        return () => { if (chartInstance.current) chartInstance.current.destroy(); };
+      }, [data]);
+
+      return <canvas ref={canvasRef}></canvas>;
+    };
+
+    function App() {
+      const [selectedTab, setSelectedTab] = useState("3ヶ月平均");
+
+      const averageData = useMemo(() => {
+        const len = rawData.length;
+        if (len === 0) return null;
+
+        const calcAvg = (key1, key2) => {
+          const sum = rawData.reduce((acc, curr) => acc + (curr[key1][key2] || 0), 0);
+          return Number((sum / len).toFixed(1));
+        };
+
+        const calcGenAvg = (period) => {
+          const avgGen = {};
+          generations.forEach(g => {
+            const sum = rawData.reduce((acc, curr) => acc + (curr[period].gen[g] || 0), 0);
+            avgGen[g] = Number((sum / len).toFixed(1));
+          });
+          return avgGen;
+        };
+
+        const totalMembersAvg = Math.round(rawData.reduce((acc, curr) => acc + curr.totalMembers, 0) / len);
+
+        return {
+          month: "3ヶ月平均",
+          totalMembers: totalMembersAvg,
+          overall: { users: calcAvg('overall', 'users'), rate: calcAvg('overall', 'rate'), avgAge: calcAvg('overall', 'avgAge'), gen: calcGenAvg('overall') },
+          morning: { users: calcAvg('morning', 'users'), rate: calcAvg('morning', 'rate'), avgAge: calcAvg('morning', 'avgAge'), gen: calcGenAvg('morning') },
+          afternoon: { users: calcAvg('afternoon', 'users'), rate: calcAvg('afternoon', 'rate'), avgAge: calcAvg('afternoon', 'avgAge'), gen: calcGenAvg('afternoon') },
+          night: { users: calcAvg('night', 'users'), rate: calcAvg('night', 'rate'), avgAge: calcAvg('night', 'avgAge'), gen: calcGenAvg('night') },
+        };
+      }, []);
+
+      const allData = [...rawData, averageData];
+      const currentData = allData.find(d => d.month === selectedTab);
+
+      const chartData = useMemo(() => {
+        if (!currentData) return [];
+        return [
+          { name: '全体', ...currentData.overall.gen },
+          { name: '朝', ...currentData.morning.gen },
+          { name: '昼', ...currentData.afternoon.gen },
+          { name: '夜', ...currentData.night.gen },
+        ];
+      }, [currentData]);
+
+      if (!currentData) return <div>Loading...</div>;
+
+      const MetricCard = ({ title, value, icon: Icon, subtext }) => (
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center space-x-4">
+          <div className="p-3 bg-orange-50 text-orange-500 rounded-xl"><Icon size={24} /></div>
+          <div>
+            <p className="text-sm text-gray-500 font-medium">{title}</p>
+            <p className="text-2xl font-bold text-gray-800">{value}</p>
+            {subtext && <p className="text-xs text-gray-400 mt-1">{subtext}</p>}
+          </div>
+        </div>
+      );
+
+      const PeriodCard = ({ periodName, data, colorClass }) => (
+        <div className={`bg-white rounded-2xl shadow-sm border-t-4 p-6 ${colorClass}`}>
+          <h3 className="text-lg font-bold text-gray-800 mb-4">{periodName}</h3>
+          <div className="space-y-4">
+            <div className="flex justify-between items-end border-b border-gray-50 pb-2">
+              <span className="text-gray-500 text-sm">利用者数</span>
+              <span className="text-xl font-semibold text-gray-800">{data.users} <span className="text-sm font-normal text-gray-500">人</span></span>
+            </div>
+            <div className="flex justify-between items-end border-b border-gray-50 pb-2">
+              <span className="text-gray-500 text-sm">参加率</span>
+              <span className="text-xl font-semibold text-gray-800">{data.rate} <span className="text-sm font-normal text-gray-500">%</span></span>
+            </div>
+            <div className="flex justify-between items-end">
+              <span className="text-gray-500 text-sm">平均年齢</span>
+              <span className="text-xl font-semibold text-gray-800">{data.avgAge > 0 ? `${data.avgAge} 歳` : '-'}</span>
+            </div>
+          </div>
+        </div>
+      );
+
+      return (
+        <div className="p-4 md:p-8">
+          <div className="max-w-6xl mx-auto space-y-8">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-extrabold text-gray-900 tracking-tight">ホットスタジオ集計ダッシュボード</h1>
+                <p className="text-gray-500 mt-1">会員の利用動向と時間帯別のパフォーマンス分析</p>
+              </div>
+              <div className="inline-flex bg-gray-200/70 p-1 rounded-xl overflow-x-auto whitespace-nowrap">
+                {allData.map((d) => (
+                  <button key={d.month} onClick={() => setSelectedTab(d.month)}
+                    className={`px-5 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${selectedTab === d.month ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                    {d.month}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <MetricCard title="月初会員数 (母数)" value={`${currentData.totalMembers} 人`} icon={IconUsers} subtext="契約中の総会員数" />
+              <MetricCard title="全体利用者数" value={`${currentData.overall.users} 人`} icon={IconUserCheck} subtext="当月1回以上参加したユニーク数" />
+              <MetricCard title="全体参加率" value={`${currentData.overall.rate} %`} icon={IconPercent} subtext="利用者数 ÷ 月初会員数" />
+              <MetricCard title="全体平均年齢" value={`${currentData.overall.avgAge} 歳`} icon={IconCalendar} subtext="参加者の平均年齢" />
+            </div>
+
+            <div>
+              <h2 className="text-lg font-bold text-gray-800 mb-4">時間帯別パフォーマンス</h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <PeriodCard periodName="☀️ 朝 (9:30 - 12:30)" data={currentData.morning} colorClass="border-orange-400" />
+                <PeriodCard periodName="🌤️ 昼 (12:30 - 18:00)" data={currentData.afternoon} colorClass="border-blue-400" />
+                <PeriodCard periodName="🌙 夜 (18:00 - ラスト)" data={currentData.night} colorClass="border-indigo-600" />
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+              <h2 className="text-lg font-bold text-gray-800 mb-6">時間帯別の年代分布 (単位: %)</h2>
+              <div className="h-80 w-full relative">
+                <GenerationsChart data={chartData} />
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
