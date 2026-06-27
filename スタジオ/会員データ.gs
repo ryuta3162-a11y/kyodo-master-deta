@@ -4,14 +4,22 @@
  * 会員ごとの参加回数・氏名・年齢を出力するスクリプトです。
  *
  * ※ F列（6列目）・D6・E6 など手入力セルは上書きしません。
- * ※ G6 … 352番台の名簿ユニーク人数（自動）
- * ※ H6〜 … 352番台会員の月別参加人数（4月→H, 5月→I … 各月ユニーク人数）
+ * ※ 6行目 … 352番台の月別参加人数（G6=全月, H6〜=各月）
+ * ※ 7行目 … 352以外の月別参加人数
+ * ※ 8行目 … 352参加率（各月の352参加 ÷ E6在籍数）
  */
 
 const MANUAL_COL = 6; // F列（手入力・GAS非更新）
-const G6_ROW = 6;
-const G6_COL = 7;
+const STATS_ROW_352 = 6;
+const STATS_ROW_OTHER = 7;
+const STATS_ROW_PCT = 8;
+const MONTH_LABEL_ROW = 5;
+const LIST_START_ROW = 9; // 名簿ヘッダー（データは10行目〜）
+const STATS_LABEL_COL = 1; // A列に行ラベル
+const STATS_TOTAL_COL = 7; // G列＝全月
 const LIST_MONTH_START_COL = 8; // H列から月別（H=4月, I=5月, J=6月…）
+const LIST_HEADER_COLS = 4; // 名簿ヘッダー A〜D のみ
+const STATS_BLOCK_END_ROW = 8;
 
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -52,20 +60,78 @@ function canonical352Id_(rawOrNormalized) {
 }
 
 /**
- * 6行目 H6, I6, J6… に、各月シートで参加した352番台会員のユニーク人数を書き込む
- * （D6の名前リストではなく、出席表の会員番号が352で始まるかで判定）
+ * 6行目: 352参加人数 / 7行目: 352以外 / 8行目: 352参加率（E6÷在籍）
  */
-function writeRow6Monthly352Counts_(sheet, targetMonths, monthlyUniqueUsers) {
+function writeStatsRows352OtherPct_(sheet, targetMonths, monthlyUniqueUsers, unique352Count, uniqueOtherCount, e6val) {
+  const e6 = Number(e6val);
+  const pctFmt = function (num) {
+    if (!(e6 > 0)) return "-";
+    return (num / e6 * 100).toFixed(1) + "%";
+  };
+
+  sheet.getRange(STATS_ROW_352, STATS_LABEL_COL).setValue("▶352参加人数");
+  sheet.getRange(STATS_ROW_OTHER, STATS_LABEL_COL).setValue("▶352以外参加");
+  sheet.getRange(STATS_ROW_PCT, STATS_LABEL_COL).setValue("▶352参加率");
+
+  sheet.getRange(STATS_ROW_352, STATS_TOTAL_COL).setValue(unique352Count);
+  sheet.getRange(STATS_ROW_OTHER, STATS_TOTAL_COL).setValue(uniqueOtherCount);
+  sheet.getRange(STATS_ROW_PCT, STATS_TOTAL_COL).setValue(pctFmt(unique352Count));
+
   for (let i = 0; i < targetMonths.length; i++) {
     const month = targetMonths[i];
-    let count = 0;
-    const users = monthlyUniqueUsers[month];
-    if (users) {
-      users.forEach(function (id) {
-        if (is352SeriesMember_(id)) count++;
-      });
-    }
-    sheet.getRange(G6_ROW, listMonthCol_(i)).setValue(count);
+    const col = listMonthCol_(i);
+    let month352 = 0;
+    let monthOther = 0;
+    monthlyUniqueUsers[month].forEach(function (id) {
+      if (is352SeriesMember_(id)) month352++;
+      else monthOther++;
+    });
+    sheet.getRange(STATS_ROW_352, col).setValue(month352);
+    sheet.getRange(STATS_ROW_OTHER, col).setValue(monthOther);
+    sheet.getRange(STATS_ROW_PCT, col).setValue(pctFmt(month352));
+  }
+}
+
+/** 5行目 G列〜に月ラベル（352集計ブロック用・H列以降が各月） */
+function writeStatsMonthLabelRow_(sheet, targetMonths) {
+  sheet.getRange(MONTH_LABEL_ROW, STATS_LABEL_COL).setValue("【閉店以降352】");
+  sheet.getRange(MONTH_LABEL_ROW, STATS_TOTAL_COL).setValue("全月");
+  for (let i = 0; i < targetMonths.length; i++) {
+    sheet.getRange(MONTH_LABEL_ROW, listMonthCol_(i)).setValue(targetMonths[i]);
+  }
+  const lastCol = listMonthCol_(targetMonths.length - 1);
+  sheet.getRange(MONTH_LABEL_ROW, STATS_LABEL_COL, 1, lastCol - STATS_LABEL_COL + 1)
+    .setBackground("#fff2cc").setFontWeight("bold");
+}
+
+/** 352集計ブロック（6〜8行目）の見た目を整える */
+function formatStatsBlock_(sheet, targetMonths) {
+  const lastCol = listMonthCol_(targetMonths.length - 1);
+  const width = lastCol - STATS_TOTAL_COL + 1;
+
+  sheet.getRange(STATS_ROW_352, STATS_LABEL_COL).setFontWeight("bold");
+  sheet.getRange(STATS_ROW_OTHER, STATS_LABEL_COL).setFontWeight("bold");
+  sheet.getRange(STATS_ROW_PCT, STATS_LABEL_COL).setFontWeight("bold");
+
+  sheet.getRange(STATS_ROW_352, STATS_TOTAL_COL, 1, width)
+    .setBackground("#d9ead3").setHorizontalAlignment("center");
+  sheet.getRange(STATS_ROW_OTHER, STATS_TOTAL_COL, 1, width)
+    .setBackground("#fce5cd").setHorizontalAlignment("center");
+  sheet.getRange(STATS_ROW_PCT, STATS_TOTAL_COL, 1, width)
+    .setBackground("#d0e0e3").setHorizontalAlignment("center");
+
+  sheet.getRange(MONTH_LABEL_ROW, STATS_LABEL_COL, STATS_BLOCK_END_ROW - MONTH_LABEL_ROW + 1, lastCol)
+    .setBorder(true, true, true, true, true, true, "#999999", SpreadsheetApp.BorderStyle.SOLID);
+}
+
+/** 名簿エリアの古いデータを消す（F列は手入力のため除外） */
+function clearListArea_(sheet, startRow, endRow, lastCol) {
+  if (endRow < startRow) return;
+  const numRows = endRow - startRow + 1;
+  sheet.getRange(startRow, 1, numRows, 4).clearContent();
+  sheet.getRange(startRow, 5, numRows, 1).clearContent(); // E列
+  if (lastCol > MANUAL_COL) {
+    sheet.getRange(startRow, MANUAL_COL + 1, numRows, lastCol - MANUAL_COL).clearContent(); // G列〜
   }
 }
 
@@ -86,28 +152,29 @@ function snapshotManualCells_(sheet) {
   const lastRow = Math.max(sheet.getLastRow(), 1);
   const lastCol = Math.max(sheet.getLastColumn(), 18);
   const colF = sheet.getRange(1, MANUAL_COL, lastRow, 1).getValues();
-  const row6 = sheet.getRange(G6_ROW, 1, 1, lastCol).getValues()[0];
+  const row6 = sheet.getRange(STATS_ROW_352, 1, 1, lastCol).getValues()[0];
   return { colF: colF, row6: row6, lastRow: lastRow, lastCol: lastCol };
 }
 
-/** F列・6行目の手入力（G6・H6〜月別は除く）を復元し G6 を書き込む */
+/** F列・6行目の手入力（G6・H6〜月別は除く）を復元し、352全月人数を6行目G列に書き込む */
 function restoreManualCells_(sheet, snapshot, unique352Count, monthCount) {
   if (snapshot.colF.length > 0) {
     sheet.getRange(1, MANUAL_COL, snapshot.colF.length, 1).setValues(snapshot.colF);
   }
-  const skipMonthCols = {};
-  skipMonthCols[G6_COL] = true;
+  const skipCols = {};
+  skipCols[STATS_TOTAL_COL] = true;
   for (let i = 0; i < monthCount; i++) {
-    skipMonthCols[listMonthCol_(i)] = true;
+    skipCols[listMonthCol_(i)] = true;
   }
+  skipCols[STATS_LABEL_COL] = true;
   if (snapshot.row6.length > 0) {
     for (let c = 0; c < snapshot.row6.length; c++) {
       const colNum = c + 1;
-      if (skipMonthCols[colNum]) continue;
-      sheet.getRange(G6_ROW, colNum).setValue(snapshot.row6[c]);
+      if (skipCols[colNum]) continue;
+      sheet.getRange(STATS_ROW_352, colNum).setValue(snapshot.row6[c]);
     }
   }
-  sheet.getRange(G6_ROW, G6_COL).setValue(unique352Count);
+  sheet.getRange(STATS_ROW_352, STATS_TOTAL_COL).setValue(unique352Count);
 }
 
 /** 指定範囲をクリア（F列は除外） */
@@ -378,15 +445,23 @@ function aggregateAttendance() {
   }
 
   const summaryDataEndRow = currentRow - 1;
-  currentRow += 2;
+  writeStatsMonthLabelRow_(targetSheet, targetMonths);
+  const listStartRow = LIST_START_ROW;
+  const listLastCol = listMonthCol_(targetMonths.length - 1);
+  const clearListEnd = Math.max(oldLastRow, listStartRow + 200);
 
-  const listStartRow = currentRow;
-  const listHeaderLeft = ["会員番号", "会員氏名", "年齢", "合計参加回数"];
-  targetSheet.getRange(listStartRow, 1, 1, 4).setValues([listHeaderLeft])
+  if (!isNewSheet) {
+    clearListArea_(targetSheet, listStartRow, clearListEnd, Math.max(listLastCol, manualSnapshot.lastCol, 18));
+  }
+
+  const listHeader = ["会員番号", "会員氏名", "年齢", "合計参加回数"];
+  targetSheet.getRange(listStartRow, 1, 1, LIST_HEADER_COLS).setValues([listHeader])
     .setBackground("#e2efda").setFontWeight("bold");
   for (let i = 0; i < targetMonths.length; i++) {
     targetSheet.getRange(listStartRow, listMonthCol_(i)).setValue(targetMonths[i] + " 参加回数");
   }
+  targetSheet.getRange(listStartRow, LIST_MONTH_START_COL, 1, listLastCol - LIST_MONTH_START_COL + 1)
+    .setBackground("#e2efda").setFontWeight("bold");
 
   const sortedMemberIds = Object.keys(attendanceCount).sort(function (a, b) {
     return attendanceCount[b].total - attendanceCount[a].total;
@@ -409,7 +484,7 @@ function aggregateAttendance() {
   if (!isNewSheet) {
     // サマリーに残った古い月行を削除（F列・6行目は除外）
     for (let r = summaryDataEndRow + 1; r < listStartRow; r++) {
-      if (r === G6_ROW) continue;
+      if (r >= MONTH_LABEL_ROW && r <= STATS_BLOCK_END_ROW) continue;
       const val = targetSheet.getRange(r, 1).getValue();
       if (val && /^\d+月$/.test(String(val))) {
         clearRangeExcludingColF_(targetSheet, r, 1, 1, 18);
@@ -423,25 +498,32 @@ function aggregateAttendance() {
   }
 
   const unique352Count = sortedMemberIds.filter(function (id) { return is352SeriesMember_(id); }).length;
+  const uniqueOtherCount = sortedMemberIds.filter(function (id) { return !is352SeriesMember_(id); }).length;
+  const e6val = manualSnapshot.row6.length >= 5 ? manualSnapshot.row6[4] : "";
+
   restoreManualCells_(targetSheet, manualSnapshot, unique352Count, targetMonths.length);
-  writeRow6Monthly352Counts_(targetSheet, targetMonths, monthlyUniqueUsers);
+  writeStatsRows352OtherPct_(targetSheet, targetMonths, monthlyUniqueUsers, unique352Count, uniqueOtherCount, e6val);
+  formatStatsBlock_(targetSheet, targetMonths);
 
   let alertMsg = "すべての集計が完了しました。\n\n【352番台】\n";
-  alertMsg += "G6（全月で1回でも参加）: " + unique352Count + "人\n";
+  alertMsg += "6行目G列（全月参加）: " + unique352Count + "人\n";
+  alertMsg += "7行目G列（352以外・全月）: " + uniqueOtherCount + "人\n";
   for (let mi = 0; mi < targetMonths.length; mi++) {
     const month = targetMonths[mi];
     let month352 = 0;
+    let monthOther = 0;
     monthlyUniqueUsers[month].forEach(function (id) {
       if (is352SeriesMember_(id)) month352++;
+      else monthOther++;
     });
     const colLetter = String.fromCharCode(72 + mi);
-    alertMsg += month + "（" + colLetter + "6）: " + month352 + "人\n";
+    const pct = (e6val !== "" && Number(e6val) > 0)
+      ? (month352 / Number(e6val) * 100).toFixed(1) + "%"
+      : "-";
+    alertMsg += month + "（" + colLetter + "列）352:" + month352 + " / 他:" + monthOther + " / 率:" + pct + "\n";
   }
-  const e6val = manualSnapshot.row6.length >= 5 ? manualSnapshot.row6[4] : "";
   if (e6val !== "" && !isNaN(Number(e6val))) {
-    alertMsg += "\nE6（在籍数・手入力）: " + e6val + "人";
-    alertMsg += "\n※月別参加 > E6 のときは、出席表の番号表記ゆれで同一人物が別番号になっていないか確認してください。";
+    alertMsg += "\nE6（在籍数）: " + e6val + "人";
   }
-  alertMsg += "\n\n同一人物が月内に複数レッスン参加しても、月別は1人1カウントです。";
   SpreadsheetApp.getUi().alert(alertMsg);
 }
