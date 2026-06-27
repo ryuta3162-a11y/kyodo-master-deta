@@ -28,7 +28,65 @@ function onOpen() {
   ui.createMenu('⚙️ レイバー作成')
     .addItem('ひばりが丘分を作成', 'showLaborDialog')
     .addItem('経堂分を作成', 'showLaborDialogKyodo')
+    .addSeparator()
+    .addItem('経堂：齋木だけ追記（既存維持）', 'showAppendSaikiLaborDialog')
     .addToUi();
+}
+
+/** 経堂：齋木 豪（シフト表B20行目・社員304944） */
+const SAIKI_KYODO_STAFF = {
+  name: "齋木",
+  shiftSheetRow: 20,
+  memoOffset: 1,
+  color: "#cfe2f3"
+};
+
+/** 齋木さんの表記ゆれ（シフト表は「齋木」、手入力は「斎木」等） */
+function isSaikiStaffName_(name) {
+  const n = String(name).trim();
+  return n === "齋木" || n === "斎木" || n === "齊木" ||
+    n.indexOf("齋") !== -1 || n.indexOf("斎") !== -1 || n.indexOf("齊") !== -1;
+}
+
+/** 経堂レイバーの列数・時間設定 */
+function getKyodoLaborLayout_() {
+  const START_HOUR = 8;
+  const END_HOUR = 22;
+  const HOURS_COUNT = END_HOUR - START_HOUR + 1;
+  const TOTAL_TIME_COLS = HOURS_COUNT * 4;
+  return {
+    START_HOUR: START_HOUR,
+    END_HOUR: END_HOUR,
+    HOURS_COUNT: HOURS_COUNT,
+    TOTAL_TIME_COLS: TOTAL_TIME_COLS,
+    TOTAL_COLS: 2 + TOTAL_TIME_COLS
+  };
+}
+
+/** 範囲に触れる結合セルをすべて完全解除（部分解除エラー防止） */
+function safeBreakApartMergedRanges_(range) {
+  try {
+    const merged = range.getMergedRanges();
+    if (merged.length > 0) {
+      const seen = {};
+      merged.forEach(function (m) {
+        const key = m.getA1Notation();
+        if (seen[key]) return;
+        seen[key] = true;
+        try { m.breakApart(); } catch (e) { /* ignore */ }
+      });
+    } else {
+      try { range.breakApart(); } catch (e) { /* ignore */ }
+    }
+  } catch (e) { /* ignore */ }
+}
+
+/** 結合セルを安全に解除してから再結合 */
+function safeMergeRange_(range) {
+  try {
+    safeBreakApartMergedRanges_(range);
+    range.merge();
+  } catch (e) { /* ignore */ }
 }
 
 /**
@@ -812,7 +870,8 @@ function generateLaborScheduleKyodo(sourceSheetName) {
     { name: "美絵", color: COLOR.STAFF_BLUE, memoOffset: 1 },
     { name: "由岐恵", color: COLOR.STAFF_BLUE, memoOffset: 1 },
     { name: "澤野", color: COLOR.STAFF_BLUE, memoOffset: 1 },
-    { name: "みと", color: COLOR.STAFF_PINK, memoOffset: 1 }
+    { name: "みと", color: COLOR.STAFF_PINK, memoOffset: 1 },
+    { name: "齋木", color: COLOR.STAFF_BLUE, memoOffset: 1 } // 20行目・社員304944
   ];
 
   const instructorMap = {
@@ -1344,4 +1403,456 @@ function generateLaborScheduleKyodo(sourceSheetName) {
   
   const ui = SpreadsheetApp.getUi();
   ui.alert("作成完了！\n印刷設定で「A4縦」「幅に合わせる」を選択してください。\n下部メモ欄を統合し、全幅で表示するようにしました。");
+}
+
+/* ========================================================
+ * 経堂レイバー：既存シートを消さず1名だけ追記（手入力維持用）
+ * ======================================================== */
+
+function showAppendSaikiLaborDialog() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetNames = [];
+  ss.getSheets().forEach(function (sheet) {
+    if (sheet.getName().indexOf("シフト") !== -1) sheetNames.push(sheet.getName());
+  });
+  if (sheetNames.length === 0) {
+    SpreadsheetApp.getUi().alert("「シフト」と名のつくシートが見つかりませんでした。");
+    return;
+  }
+
+  const htmlOutput = HtmlService.createHtmlOutput(
+    '<div style="font-family:sans-serif;padding:10px;">' +
+    '<p style="font-weight:bold;color:#b71c1c;">【経堂】齋木さんの行だけ追記</p>' +
+    '<p style="font-size:12px;color:#666;">既存のレイバーシートは削除しません。手入力した内容はそのまま残ります。<br>既に追記済みで位置がずれている場合も、実行すると1行上へ戻して枠線を整えます。</p>' +
+    '<select id="sheetName" style="width:100%;padding:10px;margin-bottom:15px;">' +
+    sheetNames.map(function (n) { return '<option value="' + n + '">' + n + '</option>'; }).join("") +
+    '</select>' +
+    '<button type="button" id="submitBtn" onclick="run()" style="width:100%;background:#b71c1c;color:#fff;border:none;padding:12px;border-radius:4px;font-weight:bold;cursor:pointer;">齋木さんを追記</button>' +
+    '<script>' +
+    'function run(){' +
+    'var b=document.getElementById("submitBtn");b.disabled=true;b.innerText="処理中...";' +
+    'google.script.run.withSuccessHandler(function(m){alert(m);google.script.host.close();})' +
+    '.withFailureHandler(function(e){alert("エラー: "+e.message);b.disabled=false;b.innerText="齋木さんを追記";})' +
+    '.appendKyodoStaffToExistingLabor(document.getElementById("sheetName").value);' +
+    '}' +
+    '</script></div>'
+  ).setWidth(380).setHeight(260);
+
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, "齋木さんをレイバー追記");
+}
+
+/**
+ * 既存の経堂レイバーシートに、指定スタッフの行を日別ブロックへ追記
+ * @return {string} 完了メッセージ
+ */
+function appendKyodoStaffToExistingLabor(sourceSheetName) {
+  return appendKyodoStaffToExistingLabor_(sourceSheetName, SAIKI_KYODO_STAFF);
+}
+
+function appendKyodoStaffToExistingLabor_(sourceSheetName, staffSpec) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const srcSheet = ss.getSheetByName(sourceSheetName);
+  if (!srcSheet) throw new Error("シフトシートが見つかりません: " + sourceSheetName);
+
+  const monthMatch = sourceSheetName.match(/(\d{1,2})月/);
+  const targetSheetName = monthMatch
+    ? monthMatch[1] + "月 レイバースケジュール(経堂)"
+    : "レイバースケジュール(経堂)";
+  const targetSheet = ss.getSheetByName(targetSheetName);
+  if (!targetSheet) {
+    throw new Error("「" + targetSheetName + "」がありません。シート名を確認してください。");
+  }
+
+  const layout = getKyodoLaborLayout_();
+  const { START_HOUR, END_HOUR, TOTAL_COLS } = layout;
+
+  const daysCount = srcSheet.getLastColumn() - 2;
+  if (daysCount < 1) throw new Error("シフト表の日付列が読み取れません。");
+
+  const shiftRow = staffSpec.shiftSheetRow;
+  const shiftData = srcSheet.getRange(shiftRow, 3, 1, daysCount).getValues()[0];
+  const memoData = staffSpec.memoOffset
+    ? srcSheet.getRange(shiftRow + staffSpec.memoOffset, 3, 1, daysCount).getValues()[0]
+    : [];
+
+  // 既に1行下にずれている齋木行を先に修復
+  let relocated = fixAllMisplacedSaikiRows_(targetSheet);
+
+  const data = targetSheet.getDataRange().getValues();
+  const blockStarts = [];
+  for (let r = 0; r < data.length; r++) {
+    if (/^\d+日$/.test(String(data[r][0]).trim())) blockStarts.push(r);
+  }
+  if (blockStarts.length === 0) {
+    throw new Error("レイバーシートに日付ブロック（○日）が見つかりません。");
+  }
+
+  let inserted = 0;
+  let skipped = 0;
+  let repainted = 0;
+
+  for (let b = blockStarts.length - 1; b >= 0; b--) {
+    const dayIdx = b;
+    if (dayIdx >= daysCount) continue;
+
+    const start = blockStarts[b];
+    const end = (b + 1 < blockStarts.length) ? blockStarts[b + 1] : data.length;
+    let memoR = -1;
+    let saikiR = -1;
+    for (let r = start; r < end; r++) {
+      const aVal = String(data[r][0]).trim();
+      const bVal = String(data[r][1]).trim();
+      if (aVal === "メモ" && memoR < 0) memoR = r;
+      if (isSaikiStaffName_(bVal)) saikiR = r;
+    }
+    if (memoR < 0) continue;
+
+    const shiftText = String(shiftData[dayIdx] || "").trim();
+    const noteText = memoData.length ? String(memoData[dayIdx] || "").trim() : "";
+
+    if (saikiR >= 0) {
+      skipped++;
+      continue;
+    }
+
+    // メモ直前＝区切り行。区切り行の上にスタッフ行を挿入
+    const insertAt = memoR;
+    targetSheet.insertRowBefore(insertAt);
+
+    paintKyodoStaffRowOnSheet_(
+      targetSheet, insertAt, staffSpec.name, staffSpec.color,
+      shiftText, noteText, TOTAL_COLS, START_HOUR, END_HOUR
+    );
+    inserted++;
+  }
+
+  SpreadsheetApp.flush();
+  const ui = SpreadsheetApp.getActiveSpreadsheet();
+  let repainted = 0;
+
+  try {
+    if (inserted === 0 && relocated === 0) {
+      // 追記済み：齋木行の書式だけ直す（全ブロック修復はスキップ＝高速）
+      ui.toast("齋木行の書式を修正中...", "処理中", 60);
+      repainted = refreshAllSaikiStaffRowsFast_(targetSheet, data, blockStarts, shiftData, staffSpec, TOTAL_COLS, START_HOUR, END_HOUR);
+    } else {
+      ui.toast("レイアウトを整備中...", "処理中", 120);
+      repairKyodoLaborSheetLayout_(targetSheet);
+      repainted = refreshAllSaikiStaffRowsFast_(targetSheet, data, blockStarts, shiftData, staffSpec, TOTAL_COLS, START_HOUR, END_HOUR);
+    }
+    ui.toast("", "", 1);
+  } catch (layoutErr) {
+    return "齋木さん（" + staffSpec.name + "）の追記は完了しましたが、レイアウト整備でエラーがありました。\n" +
+      "追記: " + inserted + "日分 / スキップ: " + skipped + "日分\n\n" + layoutErr.message +
+      "\n\nもう一度実行すると整備だけ再試行されます。";
+  }
+
+  let msg = "齋木さん（" + staffSpec.name + "）の行を追記しました。\n" +
+    "追記: " + inserted + "日分 / 既存: " + skipped + "日分（書式再適用: " + repainted + "日分）";
+  if (relocated > 0) {
+    msg += "\n位置修復: " + relocated + "日分（1行上に戻しました）";
+  }
+  msg += "\n\n結合セル・枠線・文字色（黒）を整えました。";
+  return msg;
+}
+
+/** メモ直前に誤配置された齋木行を区切り行の上へ移動 */
+function fixAllMisplacedSaikiRows_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+  const colA = sheet.getRange(1, 1, lastRow, 1).getValues();
+  let fixed = 0;
+  for (let r = lastRow - 1; r >= 1; r--) {
+    if (String(colA[r][0]).trim() !== "メモ") continue;
+    if (fixMisplacedSaikiBeforeMemo_(sheet, r + 1)) fixed++;
+  }
+  return fixed;
+}
+
+function fixMisplacedSaikiBeforeMemo_(sheet, memoRow) {
+  try {
+    const saikiRow = memoRow - 1;
+    if (saikiRow < 2) return false;
+
+    const saikiName = String(sheet.getRange(saikiRow, 2).getValue()).trim();
+    if (!isSaikiStaffName_(saikiName)) return false;
+
+    const sepRow = memoRow - 2;
+    const sepName = String(sheet.getRange(sepRow, 2).getValue()).trim();
+    const sepDate = String(sheet.getRange(sepRow, 1).getValue()).trim();
+    if (sepName !== "" || sepDate !== "" || /^\d+日$/.test(sepDate)) return false;
+
+    const layout = getKyodoLaborLayout_();
+    const totalCols = Math.max(sheet.getLastColumn(), layout.TOTAL_COLS);
+
+    safeBreakApartMergedRanges_(sheet.getRange(sepRow, 1, memoRow - sepRow + 1, totalCols));
+
+    sheet.deleteRow(saikiRow);
+    sheet.insertRowBefore(sepRow);
+
+    paintKyodoStaffRowOnSheet_(
+      sheet, sepRow, SAIKI_KYODO_STAFF.name, SAIKI_KYODO_STAFF.color,
+      "", "", totalCols, layout.START_HOUR, layout.END_HOUR
+    );
+
+    resetKyodoSeparatorRow_(sheet, sepRow + 1, totalCols);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 日別ブロックの区切り行を空行に戻す */
+function resetKyodoSeparatorRow_(sheet, row, totalCols) {
+  const rng = sheet.getRange(row, 1, 1, totalCols);
+  safeBreakApartMergedRanges_(rng);
+  rng.clearContent();
+  rng.setBackground("#ffffff");
+  sheet.setRowHeight(row, 8);
+}
+
+/** 全日期ブロックのA列結合・枠線・メモ結合・日付ヘッダーを再整備 */
+function repairKyodoLaborSheetLayout_(sheet) {
+  const layout = getKyodoLaborLayout_();
+  const { HOURS_COUNT, TOTAL_TIME_COLS, TOTAL_COLS } = layout;
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 1) return;
+
+  const colA = sheet.getRange(1, 1, lastRow, 1).getValues();
+  const dateRows = [];
+  for (let r = 0; r < colA.length; r++) {
+    if (/^\d+日$/.test(String(colA[r][0]).trim())) dateRows.push(r + 1);
+  }
+
+  for (let i = 0; i < dateRows.length; i++) {
+    try {
+      const dateRow = dateRows[i];
+      const nextBound = (i + 1 < dateRows.length) ? dateRows[i + 1] : lastRow + 1;
+
+      let memoRow = -1;
+      for (let r = dateRow; r < nextBound; r++) {
+        if (String(colA[r - 1][0]).trim() === "メモ") {
+          memoRow = r;
+          break;
+        }
+      }
+      if (memoRow < 0) continue;
+
+      const studioRow = dateRow + 1;
+      const blockEndRow = memoRow - 1;
+      const blockHeight = blockEndRow - studioRow + 1;
+      if (blockHeight < 1) continue;
+
+      // 日付行は触らず、スタジオ〜区切り行だけ結合解除
+      safeBreakApartMergedRanges_(sheet.getRange(studioRow, 1, blockHeight, TOTAL_COLS));
+
+      // A列：日付セルは単独、本文は縦結合
+      safeBreakApartMergedRanges_(sheet.getRange(dateRow, 1));
+      const aBlock = sheet.getRange(studioRow, 1, blockHeight, 1);
+      safeMergeRange_(aBlock);
+      aBlock.setVerticalAlignment("middle");
+      sheet.getRange(dateRow, 1).setVerticalAlignment("middle");
+
+      // 日付ヘッダー行（時刻ラベル・曜日）を復元
+      repairKyodoDateHeaderRow_(sheet, dateRow, layout);
+
+      // 区切り行
+      resetKyodoSeparatorRow_(sheet, blockEndRow, TOTAL_COLS);
+
+      // 外枠・時間グリッド
+      sheet.getRange(studioRow, 1, blockHeight, TOTAL_COLS)
+        .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+
+      sheet.getRange(studioRow, 3, blockHeight, TOTAL_TIME_COLS)
+        .setBorder(null, null, null, null, true, null, "black", SpreadsheetApp.BorderStyle.DOTTED);
+
+      for (let h = 1; h < HOURS_COUNT; h++) {
+        sheet.getRange(studioRow, 3 + h * 4, blockHeight, 1)
+          .setBorder(null, true, null, null, null, null, "black", SpreadsheetApp.BorderStyle.SOLID);
+      }
+
+      // メモ欄
+      repairKyodoMemoRows_(sheet, memoRow, nextBound, TOTAL_COLS);
+    } catch (e) { /* 1日分失敗しても他は続行 */ }
+  }
+}
+
+/** 日付行の時刻ヘッダー結合・書式を復元 */
+function repairKyodoDateHeaderRow_(sheet, dateRow, layout) {
+  const { HOURS_COUNT, START_HOUR, TOTAL_COLS } = layout;
+
+  safeBreakApartMergedRanges_(sheet.getRange(dateRow, 3, 1, TOTAL_COLS - 2));
+
+  for (let h = 0; h < HOURS_COUNT; h++) {
+    const col = 3 + h * 4;
+    const hourLabel = (START_HOUR + h) + ":00";
+    safeMergeRange_(sheet.getRange(dateRow, col, 1, 4));
+    sheet.getRange(dateRow, col)
+      .setValue(hourLabel)
+      .setFontWeight("bold")
+      .setFontSize(10)
+      .setFontColor("#000000")
+      .setHorizontalAlignment("center")
+      .setVerticalAlignment("middle")
+      .setFontFamily("Meiryo");
+  }
+
+  sheet.getRange(dateRow, 1)
+    .setFontWeight("bold")
+    .setFontSize(13)
+    .setFontColor("#000000")
+    .setVerticalAlignment("middle")
+    .setFontFamily("Meiryo");
+
+  sheet.getRange(dateRow, 2)
+    .setFontWeight("bold")
+    .setFontSize(14)
+    .setFontColor("#000000")
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle")
+    .setFontFamily("Meiryo");
+
+  sheet.setRowHeight(dateRow, 28);
+}
+
+/** メモ見出し・本文の結合と書式を復元 */
+function repairKyodoMemoRows_(sheet, memoRow, nextBound, totalCols) {
+  safeBreakApartMergedRanges_(sheet.getRange(memoRow, 1, 1, totalCols));
+  safeMergeRange_(sheet.getRange(memoRow, 1, 1, totalCols));
+  sheet.getRange(memoRow, 1)
+    .setValue("メモ")
+    .setBackground("#cc0000")
+    .setFontColor("#ffffff")
+    .setFontWeight("bold")
+    .setFontFamily("Meiryo");
+  sheet.setRowHeight(memoRow, 22);
+
+  if (memoRow + 1 < nextBound) {
+    const nextA = String(sheet.getRange(memoRow + 1, 1).getValue()).trim();
+    if (nextA !== "メモ" && !/^\d+日$/.test(nextA)) {
+      safeBreakApartMergedRanges_(sheet.getRange(memoRow + 1, 1, 1, totalCols));
+      safeMergeRange_(sheet.getRange(memoRow + 1, 1, 1, totalCols));
+      sheet.getRange(memoRow + 1, 1)
+        .setFontColor("#000000")
+        .setHorizontalAlignment("left")
+        .setVerticalAlignment("top")
+        .setWrap(true)
+        .setFontFamily("Meiryo");
+    }
+  }
+}
+
+/** シート上の全齋木行に書式を再適用（一括読み込みで高速化） */
+function refreshAllSaikiStaffRowsFast_(sheet, data, blockStarts, shiftData, staffSpec, totalCols, startHour, endHour) {
+  let count = 0;
+  for (let r = 0; r < data.length; r++) {
+    const nm = String(data[r][1] || "").trim();
+    if (!isSaikiStaffName_(nm)) continue;
+
+    let dayIdx = 0;
+    for (let i = blockStarts.length - 1; i >= 0; i--) {
+      if (blockStarts[i] <= r) {
+        dayIdx = i;
+        break;
+      }
+    }
+
+    const shiftText = (shiftData && dayIdx < shiftData.length)
+      ? String(shiftData[dayIdx] || "").trim()
+      : "";
+
+    paintKyodoStaffRowOnSheet_(
+      sheet, r + 1, staffSpec.name, staffSpec.color,
+      shiftText, "", totalCols, startHour, endHour
+    );
+    count++;
+  }
+  return count;
+}
+
+/** @deprecated refreshAllSaikiStaffRowsFast_ を使用 */
+function refreshAllSaikiStaffRows_(sheet, shiftData, staffSpec, totalCols, startHour, endHour) {
+  const data = sheet.getDataRange().getValues();
+  const blockStarts = [];
+  for (let r = 0; r < data.length; r++) {
+    if (/^\d+日$/.test(String(data[r][0]).trim())) blockStarts.push(r);
+  }
+  return refreshAllSaikiStaffRowsFast_(sheet, data, blockStarts, shiftData, staffSpec, totalCols, startHour, endHour);
+}
+
+/** レイバー1行分のシフトバー描画（追記用・通常作成と同じ書式） */
+function paintKyodoStaffRowOnSheet_(sheet, row, staffName, staffColor, shiftText, noteText, TOTAL_COLS, START_HOUR, END_HOUR) {
+  const SHIFT_BAR = "#cccccc";
+  const WHITE = "#ffffff";
+  const STRIPE = "#f7f7f7";
+  const BLACK = "#000000";
+  const timeColCount = TOTAL_COLS - 1;
+
+  const bg = [];
+  const fc = [];
+  const fw = [];
+  const fs = [];
+  const ha = [];
+  const va = [];
+  for (let t = 0; t < timeColCount; t++) {
+    bg.push(t >= 1 && Math.floor(t / 4) % 2 !== 0 ? STRIPE : WHITE);
+    fc.push(BLACK);
+    fw.push(t === 0 ? "bold" : "bold");
+    fs.push(10);
+    ha.push("center");
+    va.push("middle");
+  }
+  bg[0] = staffColor;
+  fc[0] = BLACK;
+
+  const rowRange = sheet.getRange(row, 2, 1, timeColCount);
+  rowRange
+    .setBackgrounds([bg])
+    .setFontColors([fc])
+    .setFontWeights([fw])
+    .setFontSizes([fs])
+    .setHorizontalAlignments([ha])
+    .setVerticalAlignments([va])
+    .setFontFamily("Meiryo");
+
+  rowRange.getCell(1, 1)
+    .setValue(staffName)
+    .setFontWeight("bold")
+    .setFontSize(10)
+    .setFontColor(BLACK)
+    .setBackground(staffColor)
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+
+  if (shiftText && /\d/.test(shiftText)) {
+    const clean = shiftText.replace(/[０-９]/g, function (s) {
+      return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
+    }).replace(/\s/g, "");
+    const m = clean.match(/^(\d{1,2})[:：]?(\d{2})?[-~～](\d{1,2})[:：]?(\d{2})?/);
+    if (m) {
+      const sH = parseInt(m[1], 10);
+      const sM = parseInt(m[2] || "0", 10);
+      const eH = parseInt(m[3], 10);
+      const eM = parseInt(m[4] || "0", 10);
+      const sB = (sH - START_HOUR) * 4 + Math.floor(sM / 15);
+      const eB = (eH - START_HOUR) * 4 + Math.floor(eM / 15);
+      for (let k = sB; k < eB && (2 + k) < TOTAL_COLS; k++) {
+        sheet.getRange(row, 3 + k).setBackground(SHIFT_BAR);
+      }
+      if (eB > sB) {
+        try {
+          sheet.getRange(row, 3 + sB, 1, eB - sB)
+            .setBorder(true, true, true, true, null, null, "black", SpreadsheetApp.BorderStyle.SOLID);
+        } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  // シフトバー設定後も名前セルは必ず黒（白文字化を防止）
+  sheet.getRange(row, 2)
+    .setFontColor(BLACK)
+    .setFontFamily("Meiryo");
+
+  sheet.setRowHeight(row, 24);
 }
